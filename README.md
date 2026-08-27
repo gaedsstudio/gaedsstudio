@@ -1,16 +1,13 @@
-## Hi there 👋
+# gaeds
 
-<!--
-**gaedsstudio/gaedsstudio** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
+Building AI systems, developer tools, and experimental software.
 
-Here are some ideas to get you started:
+### Selected work
 
-- 🔭 I’m currently working on ...
-- 🌱 I’m currently learning ...
-- 👯 I’m looking to collaborate on ...
-- 🤔 I’m looking for help with ...
-- 💬 Ask me about ...
-- 📫 How to reach me: ...
-- 😄 Pronouns: ...
-- ⚡ Fun fact: ...
--->
+- **SOVYN** — compact AI models and infrastructure
+- **SOVYN-85M** — experimental language model
+- More projects coming soon
+
+### Focus
+
+AI systems · LLMs · Developer tools · Experimental software
