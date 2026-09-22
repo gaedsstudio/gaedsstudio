@@ -93,9 +93,26 @@ jobs:
           s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 26")
           s = s.replace('namespace = "org.safescan.safescan"', 'namespace = "org.safescan.app"')
           s = s.replace('applicationId = "org.safescan.safescan"', 'applicationId = "org.safescan.app"')
+          marker = "release {"
+          if marker in s and '"proguard-rules.pro"' not in s:
+              s = s.replace(
+                  marker,
+                  marker + """
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )""",
+                  1,
+              )
           p.write_text(s)
           PY
-          grep -nE 'namespace|applicationId|minSdk' android/app/build.gradle.kts
+          cat > android/app/proguard-rules.pro <<'EOF'
+          -dontwarn com.google.mlkit.vision.text.chinese.**
+          -dontwarn com.google.mlkit.vision.text.devanagari.**
+          -dontwarn com.google.mlkit.vision.text.japanese.**
+          -dontwarn com.google.mlkit.vision.text.korean.**
+          EOF
+          grep -nE 'namespace|applicationId|minSdk|proguard' android/app/build.gradle.kts
 
       - name: Resolve dependencies
         working-directory: safescan_project
