@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cat safescan_payload/part* > /tmp/safescan-source.b64
+          cat safescan_payload/part00 safescan_payload/part01 safescan_payload/part02 safescan_payload/part03 safescan_payload/part04 safescan_payload/part05 safescan_payload/part06 > /tmp/safescan-source.b64
           test "$(wc -c < /tmp/safescan-source.b64)" -eq 30380
           base64 --decode /tmp/safescan-source.b64 > /tmp/SafeScan-source.zip
           unzip -t /tmp/SafeScan-source.zip
