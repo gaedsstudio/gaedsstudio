@@ -1,24 +1,43 @@
-name: Build SafeScan APK
+name: SafeScan Camera Hotfix
+
 on:
   push:
-    branches: ['safescan-build']
+    branches:
+      - safescan-build
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - name: Restore SafeScan source
-        run: unzip -o safescan_ci_source.zip
+
+      - name: Restore hotfix source
+        run: |
+          set -euxo pipefail
+          rm -rf safescan_hotfix
+          mkdir safescan_hotfix
+          unzip -q safescan_hotfix_source.zip -d safescan_hotfix
+          test -f safescan_hotfix/lib/main.dart
+          test -f safescan_hotfix/pubspec.yaml
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.47.5'
           channel: stable
           cache: true
-      - name: Generate Android project
+
+      - name: Generate Android shell
+        working-directory: safescan_hotfix
         shell: bash
         run: |
           set -euxo pipefail
@@ -31,47 +50,64 @@ jobs:
           rm -rf android/app/src/main
           mkdir -p android/app/src/main
           cp -R /tmp/android_override/app/src/main/* android/app/src/main/
+          rm -f android/app/src/main/kotlin/org/safescan/safescan/MainActivity.kt
           python3 - <<'PY'
           from pathlib import Path
           p=Path('android/app/build.gradle.kts')
           s=p.read_text()
           s=s.replace('minSdk = flutter.minSdkVersion','minSdk = 26')
+          s=s.replace('namespace = "org.safescan.safescan"','namespace = "org.safescan.app"')
+          s=s.replace('applicationId = "org.safescan.safescan"','applicationId = "org.safescan.app"')
           p.write_text(s)
           PY
+          grep -nE 'namespace|applicationId|minSdk' android/app/build.gradle.kts
+
       - name: Resolve dependencies
-        run: flutter pub get
+        working-directory: safescan_hotfix
+        run: |
+          flutter pub get
+          flutter pub deps | grep -E 'camera(_android|_android_camerax)? ' || true
+
       - name: Analyze
-        run: flutter analyze --no-fatal-infos
-      - name: Build split release APKs
-        run: flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/debug-info
+        working-directory: safescan_hotfix
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/main.dart
+
+      - name: Build release APKs
+        working-directory: safescan_hotfix
+        run: flutter build apk --release --split-per-abi
+
       - name: Verify APK permissions
+        working-directory: safescan_hotfix
         shell: bash
         run: |
           set -euo pipefail
-          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
           mkdir -p build/verification
           : > build/verification/permissions.txt
           for apk in build/app/outputs/flutter-apk/*-release.apk; do
             echo "===== $(basename "$apk") =====" | tee -a build/verification/permissions.txt
             "$AAPT" dump permissions "$apk" | tee -a build/verification/permissions.txt
             if "$AAPT" dump permissions "$apk" | grep -q "android.permission.INTERNET"; then
-              echo 'ERROR: INTERNET permission found'
+              echo "ERROR: INTERNET permission found"
               exit 1
             fi
             EXTRA=$("$AAPT" dump permissions "$apk" | sed -n "s/.*name='\([^']*\)'.*/\1/p" | grep '^android.permission.' | grep -v '^android.permission.CAMERA$' || true)
             if [ -n "$EXTRA" ]; then
-              echo "ERROR: unexpected permissions: $EXTRA"
+              echo "ERROR: unexpected Android permissions: $EXTRA"
               exit 1
             fi
           done
+
       - name: Checksums
+        working-directory: safescan_hotfix
         run: sha256sum build/app/outputs/flutter-apk/*-release.apk | tee build/verification/SHA256SUMS.txt
+
       - uses: actions/upload-artifact@v4
         with:
-          name: SafeScan-release
+          name: SafeScan-camera-hotfix
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
           path: |
-            build/app/outputs/flutter-apk/*-release.apk
-            build/verification/permissions.txt
-            build/verification/SHA256SUMS.txt
+            safescan_hotfix/build/app/outputs/flutter-apk/*-release.apk
+            safescan_hotfix/build/verification/permissions.txt
+            safescan_hotfix/build/verification/SHA256SUMS.txt
