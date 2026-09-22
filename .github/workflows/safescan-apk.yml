@@ -1,0 +1,106 @@
+name: SafeScan APK
+
+on:
+  push:
+    branches:
+      - safescan-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore SafeScan source
+        run: |
+          cat safescan_payload/part00.b64               safescan_payload/part01.b64               safescan_payload/part02.b64               safescan_payload/part03.b64 > /tmp/safescan-source.b64
+          base64 --decode /tmp/safescan-source.b64 > /tmp/SafeScan-source.zip
+          unzip -q /tmp/SafeScan-source.zip
+          test -f safescan_project/lib/main.dart
+          test -f safescan_project/pubspec.yaml
+          sha256sum /tmp/SafeScan-source.zip
+
+      - name: Set up Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Generate Android project
+        working-directory: safescan_project
+        run: |
+          cp lib/main.dart /tmp/safescan-main.dart
+          cp pubspec.yaml /tmp/safescan-pubspec.yaml
+          flutter create . --platforms=android --org org.safescan --project-name safescan
+          cp /tmp/safescan-main.dart lib/main.dart
+          cp /tmp/safescan-pubspec.yaml pubspec.yaml
+          cp -r android_override/app/src/main/* android/app/src/main/
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/build.gradle.kts")
+          s = p.read_text()
+          s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 26")
+          p.write_text(s)
+          PY
+
+      - name: Resolve dependencies
+        working-directory: safescan_project
+        run: flutter pub get
+
+      - name: Build release APKs
+        working-directory: safescan_project
+        run: |
+          flutter build apk --release --split-per-abi --obfuscate --split-debug-info=build/debug-info
+
+      - name: Verify APK permissions
+        working-directory: safescan_project
+        run: |
+          set -euo pipefail
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -x "$AAPT"
+          mkdir -p build/verification
+          : > build/verification/permissions.txt
+
+          for apk in build/app/outputs/flutter-apk/*-release.apk; do
+            echo "===== $(basename "$apk") =====" | tee -a build/verification/permissions.txt
+            "$AAPT" dump permissions "$apk" | tee -a build/verification/permissions.txt
+
+            if "$AAPT" dump permissions "$apk" | grep -q "android.permission.INTERNET"; then
+              echo "ERROR: INTERNET permission found in $(basename "$apk")"
+              exit 1
+            fi
+
+            EXTRA="$("$AAPT" dump permissions "$apk"               | sed -n "s/.*name='\([^']*\)'.*/\1/p"               | grep '^android.permission.'               | grep -v '^android.permission.CAMERA$' || true)"
+
+            if [ -n "$EXTRA" ]; then
+              echo "ERROR: unexpected Android permissions in $(basename "$apk"):"
+              echo "$EXTRA"
+              exit 1
+            fi
+          done
+
+      - name: Record SHA-256
+        working-directory: safescan_project
+        run: |
+          sha256sum build/app/outputs/flutter-apk/*-release.apk             | tee build/verification/sha256.txt
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SafeScan-release
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            safescan_project/build/app/outputs/flutter-apk/*-release.apk
+            safescan_project/build/verification/permissions.txt
+            safescan_project/build/verification/sha256.txt
