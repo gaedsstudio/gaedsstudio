@@ -12,13 +12,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore SafeScan source
+      - name: Restore verified SafeScan source
+        shell: bash
         run: |
           set -euxo pipefail
-          rm -rf lib android pubspec.yaml README.md android_override
-          unzip -o safescan_ci_source.zip
+          cat safescan_payload/part00 safescan_payload/part01 safescan_payload/part02 safescan_payload/part03 safescan_payload/part04 safescan_payload/part05 safescan_payload/part06 > /tmp/safescan-source.b64
+          base64 --decode /tmp/safescan-source.b64 > /tmp/SafeScan-source.zip
+          unzip -t /tmp/SafeScan-source.zip
+          unzip -q /tmp/SafeScan-source.zip
+          test -f safescan_project/lib/main.dart
 
-      - name: Patch capture/OCR crash handling
+      - name: Patch camera/OCR crash handling
+        working-directory: safescan_project
         shell: bash
         run: |
           python3 - <<'PY'
@@ -30,7 +35,6 @@ jobs:
           s=s.replace("import 'dart:ui' as ui;\n","")
           s=s.replace("Icons.shield_lock_outlined","Icons.lock_outline_rounded")
           s=s.replace("DropdownButtonFormField<String>(value:expiry","DropdownButtonFormField<String>(initialValue:expiry")
-
           pattern=r"""  static Future<ProcessedScan> process\(String source,\{required ScanMode mode,required ScanFilter filter\}\) async \{.*?\n  \}\n\n  static Future<Uint8List> buildPdf"""
           replacement=r'''  static Future<ProcessedScan> process(String source,{required ScanMode mode,required ScanFilter filter}) async {
             RecognizedText? recognized;
@@ -39,8 +43,6 @@ jobs:
               recognizer = TextRecognizer(script: TextRecognitionScript.latin);
               recognized = await recognizer.processImage(InputImage.fromFilePath(source));
             } catch (_) {
-              // OCR is best-effort. A camera capture must never be discarded because
-              // the on-device recognizer failed to initialize on a specific device.
               recognized = null;
             } finally {
               try { recognizer?.close(); } catch (_) {}
@@ -63,14 +65,12 @@ jobs:
                     if(mode==ScanMode.secure && hit){
                       final r=e.boundingBox;
                       final pad=math.max(6,(r.height*.18).round());
-                      img.fillRect(
-                        image,
+                      img.fillRect(image,
                         x1:math.max(0,r.left.floor()-pad),
                         y1:math.max(0,r.top.floor()-pad),
                         x2:math.min(image.width-1,r.right.ceil()+pad),
                         y2:math.min(image.height-1,r.bottom.ceil()+pad),
-                        color:img.ColorRgb8(18,18,18),
-                      );
+                        color:img.ColorRgb8(18,18,18));
                     } else {
                       safeText.add(e.text);
                     }
@@ -84,12 +84,12 @@ jobs:
           }
 
           static Future<Uint8List> buildPdf'''
-          s2,n=re.subn(pattern,replacement,s,flags=re.S)
+          s,n=re.subn(pattern,replacement,s,flags=re.S)
           if n != 1:
               raise SystemExit(f'process patch count={n}')
-          p.write_text(s2)
+          p.write_text(s)
           PY
-          grep -n "OCR is best-effort" lib/main.dart
+          grep -n "RecognizedText? recognized" lib/main.dart
 
       - uses: actions/setup-java@v4
         with:
@@ -103,40 +103,48 @@ jobs:
           cache: true
 
       - name: Generate Android project
+        working-directory: safescan_project
         shell: bash
         run: |
           set -euxo pipefail
-          cp lib/main.dart /tmp/main.dart
-          cp pubspec.yaml /tmp/pubspec.yaml
-          cp -R android_override /tmp/android_override
+          cp lib/main.dart /tmp/safescan-main.dart
+          cp pubspec.yaml /tmp/safescan-pubspec.yaml
+
           flutter create . --platforms=android --org org.safescan --project-name safescan
-          cp /tmp/main.dart lib/main.dart
-          cp /tmp/pubspec.yaml pubspec.yaml
-          rm -rf android/app/src/main
-          mkdir -p android/app/src/main
-          cp -R /tmp/android_override/app/src/main/* android/app/src/main/
+
+          cp /tmp/safescan-main.dart lib/main.dart
+          cp /tmp/safescan-pubspec.yaml pubspec.yaml
+          cp -r android_override/app/src/main/* android/app/src/main/
+          rm -f android/app/src/main/kotlin/org/safescan/safescan/MainActivity.kt
 
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('android/app/build.gradle.kts')
+          p=Path("android/app/build.gradle.kts")
           s=p.read_text()
-          s=s.replace('minSdk = flutter.minSdkVersion','minSdk = 26')
-          # Hotfix: disable Java/Kotlin shrinking/obfuscation so CameraX and ML Kit
-          # cannot be broken by R8 and any remaining native stack trace is readable.
+          s=s.replace("minSdk = flutter.minSdkVersion", "minSdk = 26")
+          s=s.replace('namespace = "org.safescan.safescan"', 'namespace = "org.safescan.app"')
+          s=s.replace('applicationId = "org.safescan.safescan"', 'applicationId = "org.safescan.app"')
           s=s.replace('release {', 'release {\n            isMinifyEnabled = false\n            isShrinkResources = false', 1)
           p.write_text(s)
           PY
 
+          grep -nE 'namespace|applicationId|minSdk|isMinify|isShrink' android/app/build.gradle.kts
+          grep -R '^package org.safescan.app' -n android/app/src/main/kotlin/org/safescan/app/MainActivity.kt
+
       - name: Resolve dependencies
+        working-directory: safescan_project
         run: flutter pub get
 
       - name: Analyze app
+        working-directory: safescan_project
         run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/main.dart
 
       - name: Build hotfix split APKs
+        working-directory: safescan_project
         run: flutter build apk --release --split-per-abi
 
       - name: Verify APK permissions
+        working-directory: safescan_project
         shell: bash
         run: |
           set -euo pipefail
@@ -158,6 +166,7 @@ jobs:
           done
 
       - name: Checksums
+        working-directory: safescan_project
         run: sha256sum build/app/outputs/flutter-apk/*-release.apk | tee build/verification/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
@@ -166,6 +175,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            build/app/outputs/flutter-apk/*-release.apk
-            build/verification/permissions.txt
-            build/verification/SHA256SUMS.txt
+            safescan_project/build/app/outputs/flutter-apk/*-release.apk
+            safescan_project/build/verification/permissions.txt
+            safescan_project/build/verification/SHA256SUMS.txt
