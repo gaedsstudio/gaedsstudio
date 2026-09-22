@@ -42,21 +42,52 @@ jobs:
           sed -i 's/Icons\.shield_lock_outlined/Icons.lock_outline_rounded/g' lib/main.dart
           cp lib/main.dart /tmp/safescan-main.dart
           cp pubspec.yaml /tmp/safescan-pubspec.yaml
+
           flutter create . --platforms=android --org org.safescan --project-name safescan
+
           cp /tmp/safescan-main.dart lib/main.dart
           cp /tmp/safescan-pubspec.yaml pubspec.yaml
           cp -r android_override/app/src/main/* android/app/src/main/
+          rm -f android/app/src/main/kotlin/org/safescan/safescan/MainActivity.kt
+
+          cat > android/app/proguard-rules.pro <<'EOF'
+          -dontwarn com.google.mlkit.vision.text.chinese.**
+          -dontwarn com.google.mlkit.vision.text.devanagari.**
+          -dontwarn com.google.mlkit.vision.text.japanese.**
+          -dontwarn com.google.mlkit.vision.text.korean.**
+          EOF
+
           python3 - <<'PY'
           from pathlib import Path
           p = Path("android/app/build.gradle.kts")
           s = p.read_text()
           s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 26")
+          s = s.replace('namespace = "org.safescan.safescan"', 'namespace = "org.safescan.app"')
+          s = s.replace('applicationId = "org.safescan.safescan"', 'applicationId = "org.safescan.app"')
+          marker = "release {"
+          if marker in s and '"proguard-rules.pro"' not in s:
+              s = s.replace(
+                  marker,
+                  marker + """
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )""",
+                  1,
+              )
           p.write_text(s)
           PY
+
+          grep -nE 'namespace|applicationId|minSdk|proguard' android/app/build.gradle.kts
+          grep -R '^package org.safescan.app' -n android/app/src/main/kotlin/org/safescan/app/MainActivity.kt
 
       - name: Resolve dependencies
         working-directory: safescan_project
         run: flutter pub get
+
+      - name: Analyze Dart
+        working-directory: safescan_project
+        run: flutter analyze lib/main.dart
 
       - name: Build release APKs
         working-directory: safescan_project
