@@ -19,13 +19,23 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Restore SafeScan source
+        shell: bash
         run: |
-          cat safescan_payload/part00.b64               safescan_payload/part01.b64               safescan_payload/part02.b64               safescan_payload/part03.b64 > /tmp/safescan-source.b64
+          set -euxo pipefail
+          cat safescan_payload/part* > /tmp/safescan-source.b64
+          test "$(wc -c < /tmp/safescan-source.b64)" -eq 30380
           base64 --decode /tmp/safescan-source.b64 > /tmp/SafeScan-source.zip
+          unzip -t /tmp/SafeScan-source.zip
           unzip -q /tmp/SafeScan-source.zip
           test -f safescan_project/lib/main.dart
           test -f safescan_project/pubspec.yaml
           sha256sum /tmp/SafeScan-source.zip
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Set up Flutter stable
         uses: subosito/flutter-action@v2
@@ -38,11 +48,14 @@ jobs:
 
       - name: Generate Android project
         working-directory: safescan_project
+        shell: bash
         run: |
+          set -euxo pipefail
           sed -i 's/Icons\.shield_lock_outlined/Icons.lock_outline_rounded/g' lib/main.dart
           sed -i "/import 'dart:typed_data';/d" lib/main.dart
           sed -i "/import 'dart:ui' as ui;/d" lib/main.dart
           sed -i 's/DropdownButtonFormField<String>(value:expiry/DropdownButtonFormField<String>(initialValue:expiry/g' lib/main.dart
+
           cp lib/main.dart /tmp/safescan-main.dart
           cp pubspec.yaml /tmp/safescan-pubspec.yaml
 
@@ -99,6 +112,7 @@ jobs:
 
       - name: Verify APK permissions
         working-directory: safescan_project
+        shell: bash
         run: |
           set -euo pipefail
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
@@ -106,7 +120,11 @@ jobs:
           mkdir -p build/verification
           : > build/verification/permissions.txt
 
-          for apk in build/app/outputs/flutter-apk/*-release.apk; do
+          shopt -s nullglob
+          apks=(build/app/outputs/flutter-apk/*-release.apk)
+          test ${#apks[@]} -gt 0
+
+          for apk in "${apks[@]}"; do
             echo "===== $(basename "$apk") =====" | tee -a build/verification/permissions.txt
             "$AAPT" dump permissions "$apk" | tee -a build/verification/permissions.txt
 
@@ -130,10 +148,11 @@ jobs:
           sha256sum build/app/outputs/flutter-apk/*-release.apk             | tee build/verification/sha256.txt
 
       - name: Upload release artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: SafeScan-release
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
           path: |
             safescan_project/build/app/outputs/flutter-apk/*-release.apk
